@@ -1,0 +1,354 @@
+#!/afs/cats.ucsc.edu/courses/cmps112-wm/usr/racket/bin/mzscheme -qr
+;; $Id: sbi.scm,v 1.5 2019-01-04 17:04:42-08 - - $
+;;
+;; Jessica Pan - jeypan
+;;
+;; NAME
+;;    sbi.scm - silly basic interpreter
+;;
+;; SYNOPSIS
+;;    sbi.scm filename.sbir
+;;
+;; DESCRIPTION
+;;    The file mentioned in argv[1] is read and assumed to be an SBIR
+;;    program, which is the executed.  Currently it is only printed.
+;;
+
+;(define *stdin* (current-input-port))
+;(define *stdout* (current-output-port)
+(define *stderr* (current-error-port))
+
+(define *run-file*
+    (let-values
+        (((dirpath basepath root?)
+            (split-path (find-system-path 'run-file))))
+        (path->string basepath))
+)
+
+(define (die list)
+    (for-each (lambda (item) (display item *stderr*)) list)
+    (newline *stderr*)
+    (exit 1)
+)
+
+(define (usage-exit)
+    (die `("Usage: " ,*run-file* " filename"))
+)
+
+(define (readlist-from-inputfile filename)
+    (let ((inputfile (open-input-file filename)))
+         (if (not (input-port? inputfile))
+             (die `(,*run-file* ": " ,filename ": open failed"))
+             (let ((program (read inputfile)))
+                  (close-input-port inputfile)
+                         program))))
+						 
+;(define (dump-stdin)
+ ;   (let ((token (read)))
+  ;       (printf "token=~a~n" token)
+   ;      (when (not (eq? token eof)) (dump-stdin))))						 
+
+(define (write-program-by-line filename program)
+    (printf "==================================================~n")
+    (printf "~a: ~s~n" *run-file* filename)
+    (printf "==================================================~n")
+    (printf "(~n")
+    (map (lambda (line) (printf "~s~n" line)) program)
+    (printf ")~n"))
+
+
+;;=======================================================================================
+		 
+;;HELPER-FUNCTIONS (to make finding things easier)
+		 
+;; DIVIDE-HELPER-FUNCTION
+(define (divide-help x y)
+	(if (= y 0.0)
+		(if (= x 0) 
+			"+nan.0"
+			(cond ((< 0 x) "+inf.0")
+				   (else "-inf.0")))
+		(/ x y)))
+
+
+;; FUNCTION? (function present in function-table?)
+(define (function? line)
+	(when (not (null? line))
+		(hash-has-key? *function-table* (car line))))
+	
+		
+;; VARIABLE? (variable present in variable-table?)
+(define (variable? line)
+	(when (not (null? line))
+		(hash-has-key? *variable-table* (car line))))
+		
+				
+;;===============================================================
+
+;; INTERPRET-STATEMENTS
+
+;; INTERP-INPUT
+(define (interp-input line)
+	(variable-put! 'inputcount 0)
+	;(display (length line))
+	;;count number of input values
+	(define (readingInput line)
+		;;take in value to new variable
+		(let ((in (read)))
+			(if (number? in)	;;valid input
+				(begin
+					(variable-put! (car line) in)
+					(variable-put! 'inputcount (+ (variable-get 'inputcount) 1)))
+				;;otherwise
+				(printf "~a is nan (not a number)~n" in))
+			;;end of file
+			(when (eof-object? in)
+				;(display (variable-get 'inputcount))
+				(variable-put! 'inputcount -1)))
+				;(variable-put! 'eof 1)
+		
+		;;next input key and val
+		(when (not (null? (cdr line)))
+			(readingInput (cdr line))))
+	;;tailcall
+	(readingInput line))
+		
+
+;; INTERP-GOTO
+(define (interp-goto label program)
+	(when (not (null? label))
+		(interpret-program-by-line program (label-get (car label)))))
+	
+
+;; INTERP-PRINT
+(define (interp-print line) 
+    (if (null? line)(newline)
+		;;else
+		(begin
+			(if (not (pair? (car line)))
+				(begin
+					(cond ((not (string? (car line))) (display (eval-expr (car line))))
+							(else (display (car line))))         
+					(interp-print (cdr line)))
+				;;else
+				(if (not (eqv? (caar line) 'asub))
+					(begin
+						(cond ((not (string? (car line))) (display (eval-expr (car line))))
+							  (else (display (car line))))         
+						(interp-print (cdr line)))
+					;;else
+					(begin
+							;(display (variable-get(cadr (car line))))
+							;(display (eval-expr (caddr (car line))))
+							(display (vector-ref (variable-get (cadr (car line))) (- (eval-expr (caddr (car line))) 1)))
+							(printf "~n")))))))
+	
+
+;; INTERP-LET
+(define (interp-let line)
+	;(display line)
+	;(display (pair? (car line)))
+	(if (not (pair? (car line)))
+		;;evaluate expression then place in variable
+		(let ((ex (eval-expr (car (cdr line))))) (variable-put! (car line) ex))
+		;;else
+		;((display (eqv? (caar line) 'asub))
+		;(display (cadr line)))
+		(vector-set! (variable-get (cadr (car line))) (- (eval-expr (caddr (car line))) 1) (eval-expr (car (cdr line))))
+	))
+		
+		
+;; INTERP-DIM
+(define (interp-dim line)
+	;(display (caddar line)))
+	(let ((x (cdar line)))
+		(variable-put! (car x) (make-vector (eval-expr (cadr x))))))
+	
+	
+;;=============================================================================================	
+	
+
+;; Define FUNCTION-TABLE
+(define *function-table* (make-hash))
+(define (function-put! key value)
+        (hash-set! *function-table* key value))
+		
+(define (function-get key)
+        (hash-ref *function-table* key '(function isn't in function-table)))
+
+;; Define VARIABLE-TABLE
+(define *variable-table* (make-hash))
+(define (variable-put! key value)
+        (hash-set! *variable-table* key value))
+		
+(define (variable-get key)
+        (hash-ref *variable-table* key '(variable isn't in variable-table)))
+
+;; Define LABEL-TABLE
+(define *label-table* (make-hash))
+(define (label-put! key value)
+        (hash-set! *label-table* key value))
+		
+(define (label-get key)
+        (hash-ref *label-table* key '()))
+
+;; ARRAY-TABLE initially empty until dim statement is executed
+
+;; initialize VARIABLE-TABLE
+(for-each (lambda (pair) (variable-put! (car pair) (cadr pair)))
+        `(
+			(e		2.718281828459045235360287471352662497757247093)
+			(pi 	3.141592653589793238462643383279502884197169399)
+			(eof 	0.0)
+		 ))
+		 
+
+;; initializing FUNCTION-TABLE
+;; holds all functions, including operators
+;; also evaluates expressions by calling interp-'statement'
+(for-each (lambda (pair) (function-put! (car pair) (cadr pair)))
+        `(
+           (log10_2 0.301029995663981195213738894724493026768189881)
+           (sqrt_2  1.414213562373095048801688724209698078569671875)
+           (/       ,(lambda (x y)  (/ x y)));(divide-help x (if (equal? y 0) 0.0 y))))
+           (log10   ,(lambda (x) (/ (log x) (log 10.0))))
+           (mod     ,(lambda (x y) (- x (* (div x y) y))))
+           (quot 	,(lambda (x y) (truncate (/ x y))))
+           (rem 	,(lambda (x y) (- x (* (quot x y) y))))
+           (+  		,+)
+           (- 		,-)
+           (* 		,*)
+           (% 		,(lambda (x y) (- x (* (div x y) y))))
+           (= 		,(lambda (x y) (eqv? x y)))
+           (< 		,(lambda (x y) (< x y)))
+           (> 		,(lambda (x y) (> x y)))
+           (<> 		,(lambda (x y) (not (equal? x y))))
+           (>= 		,(lambda (x y) (>= x y)))
+           (<= 		,(lambda (x y) (<= x y)))
+           (abs 	,abs)
+           (acos 	,acos)
+           (asin 	,asin)
+           (atan 	,atan)
+           (cos 	,cos)
+           (round 	,round)
+           (sin 	,sin)
+           (tan 	,tan)
+           (^ 		,(lambda (x y) (expt x y)))
+           (ceil 	,ceiling)
+           (exp 	,exp)
+           (floor 	,floor)
+           (log 	,(lambda(x)(log (if (equal? x 0) 0.0 x))))
+           (sqrt 	,sqrt)
+		   
+		   ;; statements acting as functions
+		   (if 		,(void))
+		   (let 	,interp-let)
+		   (dim 	,interp-dim)
+		   (input 	,interp-input)
+		   (goto 	,interp-goto)
+		   (print 	,interp-print)
+		   
+        ))
+
+;;====================================================================================
+
+;; FILL-LABELS
+(define (fill-labels program)
+	(when (not (null? program))
+		;;line number present?
+		(when (number? (caar program))
+			;;check for label
+			(if (null? (cdar program))
+				(void)
+				;;else
+				(if (not (symbol? (cadar program)))
+					(void)
+					;;else
+					;;place label into label-table
+					(label-put! (cadar program) (caar program)))))
+	;;look at the rest of program
+	(fill-labels (cdr program))))
+
+	
+;; EVAL-EXPR (at line)
+(define (eval-expr line)
+	(if (not (pair? line))
+		(if (number? line) line              
+			(variable-get line))
+		;;else
+		(cond ((null? (cdr line)) line)
+			  ((eqv? (car line) 'asub) (vector-ref (variable-get (cadr line)) (- (eval-expr (caddr line)) 1)))
+			  (else (apply (function-get (car line)) (map eval-expr (cdr line)))))))
+
+		
+		
+
+	;		(if (eqv? (car line) 'asub)
+		
+;; INTERPRET-PROGRAM-BY-LINE
+(define (interpret-program-by-line program linenr)
+    (when (> (length program) linenr)
+        (let ((line (list-ref program linenr)))
+            (cond ((and (= (length line) 2) (list? (cadr line))) 
+						
+						(when (null? (cadr line)) (interpret-program-by-line program ( + linenr 1)))
+						(when (not (null? (cadr line)))
+							(if (function? (cadr line))
+								(begin 
+									;;checking if statement contains a label
+									(cond ((eqv? (car (cadr line)) 'if)
+												;(display (caadr(cadr line)))
+												(if (not (equal? (eval-expr (cadr (cadr line))) #t))
+													(interpret-program-by-line program (+ linenr 1))
+													(interpret-program-by-line program (- (label-get (caddr (cadr line))) 1))))
+										  ((eqv? (car (cadr line)) 'goto) (interpret-program-by-line program (- (label-get (cadr (cadr line))) 1)))
+										  (else ;;print, let, input, dim
+												((function-get (car (cadr line)))(cdr (cadr line)))
+												(interpret-program-by-line program (+ linenr 1)))))
+								;;else
+								(begin 
+									(display "Invalid entry: ")
+									(display (car (cadr line)))
+									(newline)
+									(usage-exit)))))
+				  
+				  ((= (length line) 3) 
+				  
+                        (when (null? (caddr line)) (interpret-program-by-line program ( + linenr 1)))
+						(when (not (null? (caddr line)))
+							(if (function? (caddr line) )
+								(begin 
+									;;checking if statement contains a label
+									(cond ((eqv? (car (caddr line)) 'if)
+												(if (not (equal? (eval-expr (cadr (caddr line))) #t))
+													(interpret-program-by-line program (+ linenr 1))
+													(interpret-program-by-line program (- (label-get (caddr (caddr line))) 1))))
+										  ((eqv? (car (caddr line)) 'goto) (interpret-program-by-line program (- (label-get (cadr (caddr line))) 1)))
+										  (else ;;print, let, input, dim
+												((function-get (car (caddr line)))(cdr (caddr line)))
+												(interpret-program-by-line program (+ linenr 1)))))
+								;;else
+								(begin 
+									(display "Invalid entry: ")
+									(display (car (caddr line)))
+									(newline)
+									(usage-exit)))))
+						  
+                  (else (interpret-program-by-line program (+ linenr 1)))))))
+				  
+;;====================================================================================================================================				  
+
+				  
+;; MAIN
+(define (main arglist)
+    (if (or (null? arglist) (not (null? (cdr arglist))))
+        (usage-exit)
+        (let* ((sbprogfile (car arglist))
+               (program (readlist-from-inputfile sbprogfile)))
+               ;;(write-program-by-line sbprogfile program)
+			   (fill-labels program)
+               (interpret-program-by-line program 0))))
+
+			   
+;(when (terminal-port? *stdin*)
+  (main (vector->list (current-command-line-arguments)));)
